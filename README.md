@@ -57,6 +57,10 @@ Les administrateurs peuvent redéfinir les salons avec :
 /setlogchannel
 /setlogfichier
 
+## 🏷️ Tags
+discord-bot • discord • voice-tracker • logs • voice-logs • statistics • admin-tool • monitoring • json • nodejs • javascript • voxtrace • discordjs • vocal • moderation • realtime • bot-discord • discord-activity
+
+
 ---
 
 ## 🚀 Installation
@@ -64,3 +68,4 @@ Les administrateurs peuvent redéfinir les salons avec :
 Clone le projet :
 ```bash
 git clone https://github.com/Eclips-GH/voxtrace.git
+
