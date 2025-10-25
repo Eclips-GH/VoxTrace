@@ -15,9 +15,34 @@ const config = {
   perVoiceLogs: {},
 };
 
+// ============================ ETATS EN MÉMOIRE (pour calculer les durées) ====================
+/*
+states[guildId][userId] = {
+  joinedAt?: number,        // début de l'appel (premier JOIN)
+  channelStartAt?: number,  // début dans le salon vocal courant (pour mesurer le temps par salon)
+  muteAt?: number,
+  deafAt?: number,
+  camAt?: number,
+  streamAt?: number
+}
+*/
+const states = Object.create(null);
+
 // ============================ UTILS ============================
 const safeName = s => String(s).replace(/[<>:"/\\|?*\x00-\x1F]/g, '_').slice(0, 64);
 const ts = (d = new Date(), style = 'f') => `<t:${Math.floor(d.getTime() / 1000)}:${style}>`;
+const ensureGuildState = (gid) => (states[gid] ||= Object.create(null));
+const ensureUserState = (gid, uid) => (ensureGuildState(gid)[uid] ||= Object.create(null));
+
+function fmtDuration(ms) {
+  if (!ms || ms < 1000) return `${Math.max(0, Math.round(ms / 1000))}s`;
+  const s = Math.floor(ms / 1000);
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = n => String(n).padStart(2, '0');
+  return h > 0 ? `${h}h ${pad(m)}m ${pad(sec)}s` : `${m}m ${pad(sec)}s`;
+}
 
 // ============================ DISCORD CLIENT ============================
 const client = new Client({
@@ -127,7 +152,6 @@ client.once('ready', async () => {
   console.log(`✅ Connecté en tant que ${client.user.tag}`);
   await registerCommandsGlobal();
 
-  // Prépare l'infra et les logs par salon vocal pour TOUTES les guildes
   for (const guild of client.guilds.cache.values()) {
     try {
       await ensureVoxTraceInfra(guild);
@@ -157,6 +181,7 @@ client.on('guildDelete', async guild => {
   } catch {}
   delete config.logChannels[guild.id];
   delete config.perVoiceLogs[guild.id];
+  delete states[guild.id];
 });
 
 // ============================ CHANNEL CREATE / DELETE (VOCAL) ============================
@@ -184,66 +209,141 @@ client.on('channelDelete', async channel => {
   }
 });
 
-// ============================ LOGS EN DIRECT (voiceStateUpdate) ============================
+// ============================ LOGS EN DIRECT + DURÉES ============================
 client.on('voiceStateUpdate', async (oldS, newS) => {
   const guild = newS.guild || oldS.guild;
   const member = newS.member || oldS.member;
   if (!guild || !member || member.user.bot) return;
 
-  const now = new Date();
+  const gid = guild.id;
+  const uid = member.id;
+  const userState = ensureUserState(gid, uid);
+
+  const now = Date.now();
+  const nowDate = new Date(now);
+
   const embed = new EmbedBuilder()
     .setColor(0x5865F2)
-    .setTimestamp(now)
+    .setTimestamp(nowDate)
     .setAuthor({ name: member.user.tag, iconURL: member.user.displayAvatarURL() });
 
-  // JOIN
+  const sendTo = (vId, description) => {
+    embed.setDescription(description);
+    getTextLogForVoice(guild, vId)?.send({ embeds: [embed] }).catch(() => {});
+  };
+
+  // ===================== JOIN
   if (!oldS.channelId && newS.channelId) {
-    embed.setDescription(`🟢 **Join** ${member} a rejoint **${newS.channel?.name}** (${ts(now, 'T')})\nID vocal: \`${newS.channelId}\``);
     await ensurePerVoiceLogsForGuild(guild);
-    getTextLogForVoice(guild, newS.channelId)?.send({ embeds: [embed] }).catch(()=>{});
+    userState.joinedAt = now;        // début d'appel
+    userState.channelStartAt = now;  // début dans ce salon
+    sendTo(newS.channelId,
+      `🟢 **Join** ${member} a rejoint **${newS.channel?.name}** (${ts(nowDate,'T')})\nID vocal: \`${newS.channelId}\``);
   }
-  // LEAVE
+  // ===================== LEAVE
   else if (oldS.channelId && !newS.channelId) {
-    embed.setDescription(`🔴 **Leave** ${member} a quitté **${oldS.channel?.name}** (${ts(now, 'T')})\nID vocal: \`${oldS.channelId}\``);
-    getTextLogForVoice(guild, oldS.channelId)?.send({ embeds: [embed] }).catch(()=>{});
+    let extra = '';
+
+    if (userState.channelStartAt) {
+      extra += `\n🕒 **Dans ce salon:** ${fmtDuration(now - userState.channelStartAt)}`;
+      userState.channelStartAt = undefined;
+    }
+    if (userState.joinedAt) {
+      const dur = now - userState.joinedAt;
+      extra += `\n🕒 **Durée d'appel:** ${fmtDuration(dur)}`;
+      userState.joinedAt = undefined;
+    }
+    if (userState.muteAt)   { extra += `\n🕒 **Mute:** ${fmtDuration(now - userState.muteAt)}`;    userState.muteAt = undefined; }
+    if (userState.deafAt)   { extra += `\n🕒 **Casque:** ${fmtDuration(now - userState.deafAt)}`;  userState.deafAt = undefined; }
+    if (userState.camAt)    { extra += `\n🕒 **Caméra:** ${fmtDuration(now - userState.camAt)}`;   userState.camAt = undefined; }
+    if (userState.streamAt) { extra += `\n🕒 **Stream:** ${fmtDuration(now - userState.streamAt)}`;userState.streamAt = undefined; }
+
+    sendTo(oldS.channelId,
+      `🔴 **Leave** ${member} a quitté **${oldS.channel?.name}** (${ts(nowDate,'T')})\nID vocal: \`${oldS.channelId}\`${extra}`);
   }
-  // MOVE
+  // ===================== MOVE (Switch)
   else if (oldS.channelId && newS.channelId && oldS.channelId !== newS.channelId) {
-    embed.setDescription(`🔁 **Switch** ${member} : **${oldS.channel?.name}** → **${newS.channel?.name}** (${ts(now,'T')})\nFrom: \`${oldS.channelId}\` → To: \`${newS.channelId}\``);
-    getTextLogForVoice(guild, oldS.channelId)?.send({ embeds: [embed] }).catch(()=>{});
-    getTextLogForVoice(guild, newS.channelId)?.send({ embeds: [embed] }).catch(()=>{});
+    let extra = '';
+    if (userState.channelStartAt) {
+      extra = `\n🕒 **Temps dans ${oldS.channel?.name}:** ${fmtDuration(now - userState.channelStartAt)}`;
+    }
+    const desc = `🔁 **Switch** ${member} : **${oldS.channel?.name}** → **${newS.channel?.name}** (${ts(nowDate,'T')})\nFrom: \`${oldS.channelId}\` → To: \`${newS.channelId}\`${extra}`;
+    sendTo(oldS.channelId, desc);
+    sendTo(newS.channelId, desc);
+
+    // redémarre le timer pour le nouveau salon
+    userState.channelStartAt = now;
   }
 
-  // MUTE / UNMUTE
+  // ===================== MUTE / UNMUTE
   if (oldS.selfMute !== newS.selfMute) {
     const vId = newS.channelId || oldS.channelId;
     if (vId) {
-      embed.setDescription(`${newS.selfMute ? '🔇' : '🔊'} **${newS.selfMute ? 'Mute' : 'Unmute'}** ${member} (${ts(now,'T')})\nID vocal: \`${vId}\``);
-      getTextLogForVoice(guild, vId)?.send({ embeds: [embed] }).catch(()=>{});
+      if (newS.selfMute) {
+        if (!userState.muteAt) userState.muteAt = now;
+        sendTo(vId, `🔇 **Mute** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\``);
+      } else {
+        let extra = '';
+        if (userState.muteAt) {
+          extra = `\n🕒 **Mute:** ${fmtDuration(now - userState.muteAt)}`;
+          userState.muteAt = undefined;
+        }
+        sendTo(vId, `🔊 **Unmute** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\`${extra}`);
+      }
     }
   }
-  // DEAF / UNDEAF
+
+  // ===================== DEAF / UNDEAF (Casque)
   if (oldS.selfDeaf !== newS.selfDeaf) {
     const vId = newS.channelId || oldS.channelId;
     if (vId) {
-      embed.setDescription(`${newS.selfDeaf ? '🔕' : '🔔'} **${newS.selfDeaf ? 'Casque OFF' : 'Casque ON'}** ${member} (${ts(now,'T')})\nID vocal: \`${vId}\``);
-      getTextLogForVoice(guild, vId)?.send({ embeds: [embed] }).catch(()=>{});
+      if (newS.selfDeaf) {
+        if (!userState.deafAt) userState.deafAt = now;
+        sendTo(vId, `🔕 **Casque OFF** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\``);
+      } else {
+        let extra = '';
+        if (userState.deafAt) {
+          extra = `\n🕒 **Casque:** ${fmtDuration(now - userState.deafAt)}`;
+          userState.deafAt = undefined;
+        }
+        sendTo(vId, `🔔 **Casque ON** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\`${extra}`);
+      }
     }
   }
-  // CAMERA
+
+  // ===================== CAMERA
   if (oldS.selfVideo !== newS.selfVideo) {
     const vId = newS.channelId || oldS.channelId;
     if (vId) {
-      embed.setDescription(`${newS.selfVideo ? '📷' : '📷'} **${newS.selfVideo ? 'Caméra ON' : 'Caméra OFF'}** ${member} (${ts(now,'T')})\nID vocal: \`${vId}\``);
-      getTextLogForVoice(guild, vId)?.send({ embeds: [embed] }).catch(()=>{});
+      if (newS.selfVideo) {
+        if (!userState.camAt) userState.camAt = now;
+        sendTo(vId, `📷 **Caméra ON** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\``);
+      } else {
+        let extra = '';
+        if (userState.camAt) {
+          extra = `\n🕒 **Caméra:** ${fmtDuration(now - userState.camAt)}`;
+          userState.camAt = undefined;
+        }
+        sendTo(vId, `📷 **Caméra OFF** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\`${extra}`);
+      }
     }
   }
-  // STREAM
+
+  // ===================== STREAM
   if (oldS.streaming !== newS.streaming) {
     const vId = newS.channelId || oldS.channelId;
     if (vId) {
-      embed.setDescription(`${newS.streaming ? '🟣' : '⚪'} **${newS.streaming ? 'Stream ON' : 'Stream OFF'}** ${member} (${ts(now,'T')})\nID vocal: \`${vId}\``);
-      getTextLogForVoice(guild, vId)?.send({ embeds: [embed] }).catch(()=>{});
+      if (newS.streaming) {
+        if (!userState.streamAt) userState.streamAt = now;
+        sendTo(vId, `🟣 **Stream ON** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\``);
+      } else {
+        let extra = '';
+        if (userState.streamAt) {
+          extra = `\n🕒 **Stream:** ${fmtDuration(now - userState.streamAt)}`;
+          userState.streamAt = undefined;
+        }
+        sendTo(vId, `⚪ **Stream OFF** ${member} (${ts(nowDate,'T')})\nID vocal: \`${vId}\`${extra}`);
+      }
     }
   }
 });
@@ -255,10 +355,8 @@ client.on('interactionCreate', async interaction => {
   if (!guild) return;
 
   try {
-    // IMPORTANT pour éviter "L'application ne répond plus"
     await interaction.deferReply({ ephemeral: true });
 
-    // /help (tout le monde)
     if (interaction.commandName === 'help') {
       const pages = [
         new EmbedBuilder()
@@ -294,7 +392,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // /setlogchannel (Admins)
     if (interaction.commandName === 'setlogchannel') {
       const ch = interaction.options.getChannel('salon', true);
       if (ch.type !== ChannelType.GuildText) {
@@ -305,7 +402,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // /mystats (placeholder propre)
     if (interaction.commandName === 'mystats') {
       const periods = ['24h', '7d', '30d', '3w'];
       const build = label => new EmbedBuilder()
@@ -330,7 +426,6 @@ client.on('interactionCreate', async interaction => {
       return;
     }
 
-    // fallback
     await interaction.editReply('❔ Commande non reconnue.');
   } catch (err) {
     console.error('Erreur commande:', err);
@@ -342,3 +437,10 @@ client.on('interactionCreate', async interaction => {
 
 // ============================ LOGIN ============================
 client.login(process.env.DISCORD_TOKEN);
+
+// Arrêt propre (utile sur Replit ou déploiements)
+process.on('SIGTERM', () => {
+  console.log('Shutting down...');
+  client.destroy();
+  process.exit(0);
+});
