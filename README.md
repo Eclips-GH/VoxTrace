@@ -58,7 +58,19 @@ Les administrateurs peuvent redéfinir les salons avec :
 /setlogfichier
 
 ## 🏷️ Tags
-discord-bot • discord • voice-tracker • logs • voice-logs • statistics • admin-tool • monitoring • json • nodejs • javascript • voxtrace • discordjs • vocal • moderation • realtime • bot-discord • discord-activity
+
+![Discord](https://img.shields.io/badge/Discord-7289DA?logo=discord&logoColor=white)
+![Bot](https://img.shields.io/badge/Discord%20Bot-blueviolet)
+![Voice Tracker](https://img.shields.io/badge/Voice%20Tracker-ff69b4)
+![Logs](https://img.shields.io/badge/Voice%20Logs-orange)
+![Statistics](https://img.shields.io/badge/Statistics-00bfa6)
+![Node.js](https://img.shields.io/badge/Node.js-339933?logo=node.js&logoColor=white)
+![JavaScript](https://img.shields.io/badge/JavaScript-f7df1e?logo=javascript&logoColor=black)
+![JSON](https://img.shields.io/badge/JSON-333?logo=json&logoColor=white)
+![Admin Tool](https://img.shields.io/badge/Admin%20Tool-9b59b6)
+![Real Time](https://img.shields.io/badge/Real%20Time-3498db)
+![Monitoring](https://img.shields.io/badge/Monitoring-2ecc71)
+![VoxTrace](https://img.shields.io/badge/VoxTrace-1abc9c)
 
 
 ---
@@ -68,4 +80,5 @@ discord-bot • discord • voice-tracker • logs • voice-logs • statistics
 Clone le projet :
 ```bash
 git clone https://github.com/Eclips-GH/voxtrace.git
+
 
